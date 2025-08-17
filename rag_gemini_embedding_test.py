@@ -1,15 +1,18 @@
 import os
+import time
 from dotenv import load_dotenv
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_qdrant import QdrantVectorStore
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnablePassthrough
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
+from langchain_core.embeddings import Embeddings
 from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain.memory import ConversationBufferWindowMemory
 from qdrant_client import QdrantClient
+import pdfplumber
 
 # --- 1. Load environment variables ---
 load_dotenv()
@@ -27,85 +30,154 @@ if not all([GOOGLE_API_KEY, QDRANT_API_KEY, QDRANT_URL]):
 llm = ChatGoogleGenerativeAI(
     model="gemini-2.5-flash",
     google_api_key=GOOGLE_API_KEY,
-    temperature=0.7
+    temperature=0.7,
 )
 
 # --- 4. Initialize Gemini Embedding ---
-embedding_function = GoogleGenerativeAIEmbeddings(
-    model="models/embedding-001",
-    google_api_key=GOOGLE_API_KEY
-)
-
-# --- 5. Initialize Qdrant Vector Store ---
-def get_or_create_vectorstore(doc_path: str = "sample.txt"):
-    # Try to connect to Qdrant client
-    client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
-    
-    # Create a sample document if it doesn't exist
-    if not os.path.exists(doc_path):
-        print(f"Sample file {doc_path} not found. Creating a sample document...")
-        sample_content = """
-        人工智能是计算机科学的一个分支，它企图了解智能的实质，并生产出一种新的能以人类智能相似的方式做出反应的智能机器。
-        人工智能的研究历史有着一条从以"推理"为重点到以"知识"为重点，再到以"学习"为重点的自然、清晰的脉络。
-        人工智能领域的研究包括机器人、语言识别、图像识别、自然语言处理和专家系统等。
-        机器学习是人工智能的核心，是使计算机具有智能的根本途径，其应用遍及人工智能的各个领域。
-        深度学习是机器学习中一种基于对数据进行表征学习的方法。观测值（例如图像、声音、文本）等原始数据可以使用多种方式来表示，如每个像素强度值，或者更抽象的表示如图像边缘、纹理和形状等。
-        """
-        with open(doc_path, "w", encoding="utf-8") as f:
-            f.write(sample_content)
-
-    # Check if collection exists
-    try:
-        collection_info = client.get_collection(collection_name=QDRANT_COLLECTION_NAME)
-        print(f"Collection '{QDRANT_COLLECTION_NAME}' already exists. Connecting to existing collection.")
-        # Check if the collection is empty, if so, add documents
-        if collection_info.points_count == 0:
-            print(f"Collection '{QDRANT_COLLECTION_NAME}' is empty. Loading and vectorizing documents...")
-            with open(doc_path, "r", encoding="utf-8") as f:
-                text = f.read()
-            documents = [Document(page_content=text)]
-            text_splitter = RecursiveCharacterTextSplitter(chunk_size=400, chunk_overlap=200)
-            docs = text_splitter.split_documents(documents)
-            
-            vectorstore_instance = QdrantVectorStore.from_existing_collection(
-                embedding=embedding_function,
-                collection_name=QDRANT_COLLECTION_NAME,
-                url=QDRANT_URL,
-                api_key=QDRANT_API_KEY,
-            )
-            vectorstore_instance.add_documents(docs)
-            print("Documents have been added to the existing collection.")
-            return vectorstore_instance
-        else:
-            return QdrantVectorStore.from_existing_collection(
-                embedding=embedding_function,
-                collection_name=QDRANT_COLLECTION_NAME,
-                url=QDRANT_URL,
-                api_key=QDRANT_API_KEY,
-            )
-    except Exception as e:
-        # If collection does not exist
-        print(f"Collection '{QDRANT_COLLECTION_NAME}' does not exist or cannot be accessed ({e}). Attempting to create a new collection.")
-        
-        print(f"Loading documents from {doc_path} to create a new collection...")
-        with open(doc_path, "r", encoding="utf-8") as f:
-            text = f.read()
-        documents = [Document(page_content=text)]
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=400, chunk_overlap=200)
-        docs = text_splitter.split_documents(documents)
-        
-        print(f"Vectorizing {len(docs)} document chunks and creating a new collection '{QDRANT_COLLECTION_NAME}'...")
-        vectorstore = QdrantVectorStore.from_documents(
-            docs,
-            embedding=embedding_function,
-            collection_name=QDRANT_COLLECTION_NAME,
-            url=QDRANT_URL,
-            api_key=QDRANT_API_KEY,
+# Create a wrapper class to handle different embedding types for documents and queries
+# I found that models/embedding-001 can only handle English, but gemini-embedding-001 can for multi-language
+# But idk gemini-embedding-001 can't be set to 768 dimensions via output_dimensionality, default is 3072 dimensions.
+class GeminiEmbeddingsWrapper(Embeddings):
+    def __init__(self, google_api_key: str, model_name: str = "gemini-embedding-001", output_dimensionality: int = 768):
+        self.doc_embedding = GoogleGenerativeAIEmbeddings(
+            model=model_name,
+            google_api_key=google_api_key,
+            task_type="RETRIEVAL_DOCUMENT",
+            output_dimensionality=output_dimensionality
         )
-        print("New vector database collection created and populated!")
-        return vectorstore
+        self.query_embedding = GoogleGenerativeAIEmbeddings(
+            model=model_name,
+            google_api_key=google_api_key,
+            task_type="RETRIEVAL_QUERY",
+            output_dimensionality=output_dimensionality
+        )
 
-# To initialize vectorstore
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return self.doc_embedding.embed_documents(texts)
+
+    def embed_query(self, text: str) -> list[float]:
+        return self.query_embedding.embed_query(text)
+
+# Initialize the embedding function with the wrapper
+embedding_function = GeminiEmbeddingsWrapper(google_api_key=GOOGLE_API_KEY)
+
+# --- 5. PDF Document Loader ---
+def load_pdf_document(pdf_path: str) -> list[Document]:
+    """Load PDF document using pdfplumber, simplified version"""
+    try:
+        if not os.path.exists(pdf_path):
+            raise FileNotFoundError(f"PDF file '{pdf_path}' does not exist")
+        if not pdf_path.lower().endswith('.pdf'):
+            raise ValueError(f"File '{pdf_path}' is not a PDF")
+        documents = []
+        with pdfplumber.open(pdf_path) as pdf:
+            for i, page in enumerate(pdf.pages):
+                text = page.extract_text()
+ 
+                documents.append(Document(
+                    page_content=text,
+                    metadata={
+                        "source": pdf_path,
+                        "document_type": "pdf"
+                    }
+                ))
+
+        print(f"Successfully loaded PDF document: {pdf_path}, total {len(documents)} pages")
+        return documents
+    except Exception as e:
+        raise ValueError(f"Error reading PDF file {pdf_path}: {str(e)}")
+
+def get_or_create_vectorstore(doc_path: str = "chinesecookbook.pdf"):
+    """Create or get vectorstore using PDF document (batch writing to avoid timeout)"""
+    if not os.path.exists(doc_path):
+        raise FileNotFoundError(f"PDF document '{doc_path}' does not exist. Please make sure the document file is in the current directory.")
+    if not doc_path.lower().endswith('.pdf'):
+        raise ValueError(f"File '{doc_path}' is not a PDF.")
+    try:
+        client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
+        try:
+            collection_info = client.get_collection(collection_name=QDRANT_COLLECTION_NAME)
+            print(f"Collection '{QDRANT_COLLECTION_NAME}' already exists. Connecting to existing collection.")
+            if collection_info.points_count == 0:
+                print(f"Collection '{QDRANT_COLLECTION_NAME}' is empty. Loading and vectorizing PDF document...")
+                documents = load_pdf_document(doc_path)
+                text_splitter = RecursiveCharacterTextSplitter(
+                    chunk_size=700,
+                    chunk_overlap=200
+                )
+                docs = text_splitter.split_documents(documents)
+
+                print(f"PDF document split into {len(docs)} text chunks.")
+                vectorstore_instance = QdrantVectorStore.from_existing_collection(
+                    embedding=embedding_function,
+                    collection_name=QDRANT_COLLECTION_NAME,
+                    url=QDRANT_URL,
+                    api_key=QDRANT_API_KEY,
+                )
+                batch_size = 10
+                for i in range(0, len(docs), batch_size):
+                    batch = docs[i:i + batch_size]
+                    print(f"Adding batch {i//batch_size + 1}, total {len(batch)} documents...")
+                    try:
+                        vectorstore_instance.add_documents(batch)
+                        print(f"Batch {i//batch_size + 1} added successfully")
+                    except Exception as e:
+                        print(f"Batch {i//batch_size + 1} failed: {e}")
+                        for doc in batch:
+                            try:
+                                vectorstore_instance.add_documents([doc])
+                                print(f"Single document added successfully")
+                            except Exception as single_e:
+                                print(f"Single document failed: {single_e}")
+                    time.sleep(5)
+                print("All documents have been added to the collection.")
+                return vectorstore_instance
+            else:
+                vectorstore_instance = QdrantVectorStore.from_existing_collection(
+                    embedding=embedding_function,
+                    collection_name=QDRANT_COLLECTION_NAME,
+                    url=QDRANT_URL,
+                    api_key=QDRANT_API_KEY,
+                )
+                return vectorstore_instance
+        except Exception as e:
+            print(f"Collection '{QDRANT_COLLECTION_NAME}' does not exist or cannot be accessed ({e}). Attempting to create a new collection.")
+            documents = load_pdf_document(doc_path)
+            text_splitter = RecursiveCharacterTextSplitter(
+                chunk_size=700,
+                chunk_overlap=200
+            )
+            docs = text_splitter.split_documents(documents)
+
+            print(f"Vectorizing {len(docs)} document chunks and creating new collection '{QDRANT_COLLECTION_NAME}'...")
+            vectorstore = QdrantVectorStore.from_documents(
+                [],
+                embedding=embedding_function,
+                collection_name=QDRANT_COLLECTION_NAME,
+                url=QDRANT_URL,
+                api_key=QDRANT_API_KEY,
+            )
+            batch_size = 10
+            for i in range(0, len(docs), batch_size):
+                batch = docs[i:i + batch_size]
+                print(f"Adding batch {i//batch_size + 1}, total {len(batch)} documents...")
+                try:
+                    vectorstore.add_documents(batch)
+                    print(f"Batch {i//batch_size + 1} added successfully")
+                except Exception as e:
+                    print(f"Batch {i//batch_size + 1} failed: {e}")
+                    for doc in batch:
+                        try:
+                            vectorstore.add_documents([doc])
+                            print(f"Single document added successfully")
+                        except Exception as single_e:
+                            print(f"Single document failed: {single_e}")
+                time.sleep(5)
+            print("New vector database collection created and populated!")
+            return vectorstore
+    except Exception as e:
+        raise RuntimeError(f"Error creating or getting vectorstore: {str(e)}")
+
 vectorstore = get_or_create_vectorstore()
 
 # --- 6. Initialize Memory ---
@@ -114,13 +186,27 @@ memory = ConversationBufferWindowMemory(k=10, return_messages=True)
 # --- 7. Build RAG Chain ---
 def retrieve_chunks(query: str):
     print(f"\nRetrieving documents related to '{query}'...")
-    results = vectorstore.similarity_search(query, k=2)
-    if not results:
-        print("No relevant documents found.")
+    try:
+        results = vectorstore.similarity_search(query, k=3)
+        if not results:
+            print("No relevant documents found.")
+            return ""
+        formatted_results = []
+        for i, doc in enumerate(results, 1):
+            formatted_results.append(f"Document chunk {i}:")
+            formatted_results.append(f"Content: {doc.page_content}")
+            if doc.metadata:
+                metadata_info = []
+                if metadata_info:
+                    formatted_results.append("Info: " + " | ".join(metadata_info))
+            formatted_results.append("-" * 50)
+        result_str = "\n".join(formatted_results)
+        print(f"Found {len(results)} relevant document chunks.")
+        print("Retrieval result:\n" + result_str)
+        return result_str
+    except Exception as e:
+        print(f"Error retrieving documents: {str(e)}")
         return ""
-    context = "\n\n".join([doc.page_content for doc in results])
-    print(f"Found {len(results)} relevant document snippets.")
-    return context
 
 chat_prompt = ChatPromptTemplate.from_messages([
     ("system", """You are a professional {role}. 
@@ -152,15 +238,18 @@ if __name__ == "__main__":
         if user_input.lower() in ["exit", "quit"]:
             print("Thank you! Goodbye.")
             break
-        
+
         try:
             print("\nSearching for an answer...")
+            # Call the chain, it will automatically load history from memory
             answer = rag_chain.invoke({"question": user_input})
             print("\nAnswer:")
             print(answer)
 
+            # Save the new Q&A pair to memory
             memory.save_context({"input": user_input}, {"output": answer})
-            
+
+            # Print memory content for debugging and observation
             print("\n--- Current Memory Content (recent messages) ---")
             history_messages = memory.load_memory_variables({})["history"]
             for msg in history_messages:
