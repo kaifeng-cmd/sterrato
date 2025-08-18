@@ -55,7 +55,7 @@ class CustomIBMEmbeddings(Embeddings):
 llm = ChatGoogleGenerativeAI(
     model="gemini-2.5-flash",
     google_api_key=GOOGLE_API_KEY,
-    temperature=0.7,
+    temperature=1.0
 )
 
 # --- 5. Initialize Embedding ---
@@ -95,6 +95,7 @@ def load_pdf_document(pdf_path: str) -> list[Document]:
     except Exception as e:
         raise ValueError(f"Error reading PDF file {pdf_path}: {str(e)}")
 
+# Hold on for this function, ignore for now
 def extract_page_number(text: str) -> int:
     """Extract page number from text content"""
     patterns = [
@@ -275,10 +276,15 @@ def retrieve_chunks(query: str):
 
 # New ChatPromptTemplate
 chat_prompt = ChatPromptTemplate.from_messages([
-    ("system", """You are a professional {role}. 
-                    Please answer the user's question based on the background information below. 
-                    If there is no relevant information in the background, please answer 'Sry, I don't know'. 
-                    Background Information:\n\n{context}"""),
+    ("system", """You are a professional {role}. But can be lively and interesting.
+        If user query is in Chinese, answer with Chinese, vice versa for English too.
+        Please answer the user's question naturally and helpfully based on the background information below. 
+        If the information is not available in the background, 
+        reply: 'Sry, I can't answer your question because it has reached my knowledge limit' 
+        or translate it into Chinese if query is in Chinese.
+        Do not explicitly mention 'background information'; instead, speak as if it comes from your own knowledge. 
+        If no relevant info, you can answer based on your own, but must related to your role.
+        Background Information:\n\n{context}"""),
     MessagesPlaceholder(variable_name="chat_history"), # Conversation history placeholder
     ("user", "{question}") # Current question
 ])
@@ -287,7 +293,7 @@ chat_prompt = ChatPromptTemplate.from_messages([
 rag_chain = (
     {
         "question": RunnablePassthrough(), # Pass through the user question
-        "role": lambda x: "AI Assistant", # Fixed role
+        "role": lambda x: "Chinese Food & Culture Expert", # Fixed role
         "context": lambda x: retrieve_chunks(x["question"]), # Retrieve context based on the question
         "chat_history": lambda x: memory.load_memory_variables({})["history"] # Load history from memory
     }
