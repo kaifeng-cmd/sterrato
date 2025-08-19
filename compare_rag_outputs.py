@@ -195,7 +195,7 @@ def run_rag_config(config, query):
         return f"Error: Could not initialize vector store for {config_name}"
 
     # Initialize Memory for each run
-    memory = ConversationBufferWindowMemory(k=10, return_messages=True)
+    memory = ConversationBufferWindowMemory(k=30, return_messages=True)
 
     # Retrieval function (can be a shared helper function)
     def retrieve_chunks(query_text: str, vs):
@@ -218,6 +218,15 @@ def run_rag_config(config, query):
             return ""
 
     # Prompt Template (can be a shared template)
+    """
+    For comparison between LLM & Embedding Model combinations on RAG task, I used this prompt 
+    which is different from others becuz I wanna test more on the embedding retrieval capability
+    and whether LLM able to catch the context to deliver suitable answer.
+    (the prompt only special at here.)
+    """
+    # For others like rag_gemini_ibm.py, I designed for chatbot use, approach towards real-world scenarios.
+    # So, if retrieval chunks are not relevant, LLM will still can answer user query based on his role,
+    # which is related to cooking and cuisine.
     chat_prompt = ChatPromptTemplate.from_messages([
         ("system", """You are a professional {role}. 
                         Please answer the user's question based on the background information below. 
@@ -231,7 +240,7 @@ def run_rag_config(config, query):
     rag_chain = (
         {
             "question": RunnablePassthrough(),
-            "role": lambda x: "AI Assistant",
+            "role": lambda x: "Chinese Food & Culture Expert",
             "context": lambda x: retrieve_chunks(x["question"], vectorstore),
             "chat_history": lambda x: memory.load_memory_variables({})["history"]
         }
@@ -276,8 +285,11 @@ def evaluate_answers(query: str, answers: dict, judge_llm):
 
     # Prompt for the judge LLM
     judge_prompt_template = """
-        You are an expert evaluator tasked with scoring the quality of answers provided by different RAG systems to a given question.
-        Your goal is to assess the accuracy, relevance, context suitability, and completeness of each answer based on the provided question.
+        You are an expert evaluator tasked with scoring the quality of answers 
+        provided by different RAG systems to a given question.
+        Your goal is to assess the accuracy, relevance, context suitability between question and answer, 
+        consistency, and completeness of each answer based on the provided question.
+        However, you need to know that not always lengthly answer is better, it must fit to the question context.
 
         Here are the scoring rules:
         1.  **Clear Ranking:** If there is a clear best answer, a clear second best, and a clear third answer:
@@ -297,7 +309,7 @@ def evaluate_answers(query: str, answers: dict, judge_llm):
         Example JSON output format:
         [
         {{"config_name": "Config A", "score": 1.0, "explanation": "Answer A is the most accurate, context fit, and comprehensive."}},
-        {{"config_name": "Config B", "score": 0.5, "explanation": "Answer B is good but slightly less detailed than A."}},
+        {{"config_name": "Config B", "score": 0.5, "explanation": "Answer B is good but slightly less detailed and context fit than A."}},
         {{"config_name": "Config C", "score": 0.0, "explanation": "Answer C is irrelevant or inaccurate."}}
         ]
 
@@ -434,12 +446,12 @@ if __name__ == "__main__":
 
     # Validate essential API keys
     if not all([GOOGLE_API_KEY, OPENROUTER_API_KEY, QDRANT_API_KEY, QDRANT_URL, HF_TOKEN]):
-        print("Error: Please ensure GOOGLE_API_KEY, OPENROUTER_API_KEY, QDRANT_API_KEY, QDRANT_URL, and HF_TOKEN are set in your .env file")
+        print("Error: Please ensure all API keys are set in your .env file")
         exit(1)
 
     # --- Centralized Model and Embedding Initialization ---
     llms = {
-        "gemini": ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=GOOGLE_API_KEY, temperature=0.7),
+        "gemini": ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=GOOGLE_API_KEY, temperature=1.0),
         "openrouter": ChatOpenAI(model="moonshotai/kimi-k2:free", openai_api_key=OPENROUTER_API_KEY, openai_api_base="https://openrouter.ai/api/v1", temperature=1.0),
         "judge_llm": ChatGoogleGenerativeAI(model="gemini-2.0-flash-001", google_api_key=GOOGLE_API_KEY, temperature=0.2)
     }
@@ -477,10 +489,13 @@ if __name__ == "__main__":
     # --- Define Test Queries ---
     # Using user-provided queries
     test_queries = [
-        "华人是怎么烹饪虾类的？",
+        "Can you explain what is yung chow min? the noodle..and the process of making it? from which page?",
+        "处理食材通常有什么规矩还有禁忌？",
+        "中式烹饪是怎么处理鱼类的？有什么讲究。",
         "What are the main ingredients for cooking chinese-style Chicken?",
         "牛肉适合拿来做什么料理/菜谱？通常都搭配什么食材？",
-        "Can you explain the process of making dumplings?"
+        "How to make steamed buns?",
+        "What is the cooking time for roasted duck? what ingredients are needed?"
     ]
 
     results = {} # Stores RAG answers for each query and config
@@ -496,7 +511,7 @@ if __name__ == "__main__":
             answer = run_rag_config(config, query)
             results[config_name][query] = answer
             # Print truncated answer for brevity during execution
-            print(f"Query: '{query}' -> Answer: '{answer[:100]}...'\" if len(answer) > 100 else f\"Query: '{query}' -> Answer: '{answer}'") 
+            print(f"Query: '{query}' -> Answer: '{answer[:100]}...'" if len(answer) > 100 else f"Query: '{query}' -> Answer: '{answer}'")
         print(f"===== Finished testing {config_name} =====")
 
     # --- Evaluate Answers and Populate Table Data ---

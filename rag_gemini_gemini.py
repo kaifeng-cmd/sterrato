@@ -30,7 +30,7 @@ if not all([GOOGLE_API_KEY, QDRANT_API_KEY, QDRANT_URL]):
 llm = ChatGoogleGenerativeAI(
     model="gemini-2.5-flash",
     google_api_key=GOOGLE_API_KEY,
-    temperature=0.7,
+    temperature=1.0,
 )
 
 # --- 4. Initialize Gemini Embedding ---
@@ -225,7 +225,7 @@ chat_prompt = ChatPromptTemplate.from_messages([
 rag_chain = (
     {
         "question": RunnablePassthrough(),
-        "role": lambda x: "AI Assistant",
+        "role": lambda x: "Chinese Food & Culture Expert",
         "context": lambda x: retrieve_chunks(x["question"]),
         "chat_history": lambda x: memory.load_memory_variables({})["history"]
     }
