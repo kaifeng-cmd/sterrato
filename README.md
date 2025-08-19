@@ -1,7 +1,7 @@
 # LLM-as-a-Judge on RAG evaluation & Agentic RAG (ReAct)
-In this project, I first built different Retrieval-Augmented Generation (RAG) pipelines. For the language models, I used `Gemini` from Google AI Studio, and `Kimi K2`, and `DeepSeek V3` through the OpenRouter platform. For vector storage, I adopted `Qdrant Cloud`, and the embedding models included `Gemini Embedding` and `IBM Granite Embedding`. This setup allowed me to construct multiple RAG systems with varying combinations of LLMs and embeddings as the basis for evaluation.
+In this project, I first built different **Retrieval-Augmented Generation (RAG)** pipelines. For the language models, I used `Gemini` from Google AI Studio, and `Kimi K2`, and `DeepSeek V3` through the OpenRouter platform. For vector storage, I adopted `Qdrant Cloud`, and the embedding models included `Gemini Embedding` and `IBM Granite Embedding`. This setup allowed me to construct multiple RAG systems with varying combinations of LLMs and embeddings as the basis for evaluation.
 
-To evaluate these pipelines, I designed a LLM-as-a-Judge framework. My approach is similar to ChatArena-style pairwise comparison, where the judge model compares multiple outputs side by side. On top of this, I introduced a fixed scoring rubric covering relevance, consistency, context fit, and suitability. This allows the judge to simulate human-like preference judgments while producing quantitative scores, making it easier to compare multiple systems under consistent evaluation criteria.
+To evaluate these pipelines, I designed a **LLM-as-a-Judge framework**. My approach is similar to ChatArena-style pairwise comparison, where the judge model compares multiple outputs side by side. On top of this, I introduced a fixed scoring rubric covering relevance, consistency, context fit, and suitability. This allows the judge to simulate human-like preference judgments while producing quantitative scores, making it easier to compare multiple systems under consistent evaluation criteria.
 
 In addition to evaluation, I implemented an Agentic RAG system. Here, the RAG pipeline is embedded into a `ReAct agent (Reasoning + Acting)`. In this paradigm, the agent alternates between three stages:
 
@@ -51,6 +51,7 @@ Here are some examples to showcase the agent's capabilities:
 ![](reAct_agent/demo_screenshot/eval_Score1.png)
 
 ![](reAct_agent/demo_screenshot/eval_Score2.png)
+
 *Explanation: These tables display the result of the LLM-as-a-judge evaluation, showcasing total scores for different LLM_Embedding pairs. The judging explanations are available in `rag_evaluation_results.xlsx`. These two tables have different scores due to different set of user queries have been asked.*
 
 ## Project Structure
