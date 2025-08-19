@@ -1,17 +1,17 @@
 # LLM-as-a-Judge on RAG evaluation & Agentic RAG (ReAct)
-In this project, I first built different Retrieval-Augmented Generation (RAG) pipelines. For the language models, I used Gemini from Google AI Studio, Kimi K2, and DeepSeek V3 through the OpenRouter platform. For vector storage, I adopted Qdrant Cloud, and the embedding models included Gemini Embedding and IBM Granite Embedding. This setup allowed me to construct multiple RAG systems with varying combinations of LLMs and embeddings as the basis for evaluation.
+In this project, I first built different Retrieval-Augmented Generation (RAG) pipelines. For the language models, I used `Gemini` from Google AI Studio, and `Kimi K2`, and `DeepSeek V3` through the OpenRouter platform. For vector storage, I adopted `Qdrant Cloud`, and the embedding models included `Gemini Embedding` and `IBM Granite Embedding`. This setup allowed me to construct multiple RAG systems with varying combinations of LLMs and embeddings as the basis for evaluation.
 
 To evaluate these pipelines, I designed a LLM-as-a-Judge framework. My approach is similar to ChatArena-style pairwise comparison, where the judge model compares multiple outputs side by side. On top of this, I introduced a fixed scoring rubric covering relevance, consistency, context fit, and suitability. This allows the judge to simulate human-like preference judgments while producing quantitative scores, making it easier to compare multiple systems under consistent evaluation criteria.
 
-In addition to evaluation, I implemented an Agentic RAG system. Here, the RAG pipeline is embedded into a ReAct agent (Reasoning + Acting). In this paradigm, the agent alternates between three stages:
+In addition to evaluation, I implemented an Agentic RAG system. Here, the RAG pipeline is embedded into a `ReAct agent (Reasoning + Acting)`. In this paradigm, the agent alternates between three stages:
 
-1. Reasoning – the agent explains its intermediate thought process in natural language.
+1. **Reasoning** – the agent explains its intermediate thought process in natural language.
 
-2. Action – the agent decides which tool to call, such as retrieving from the vector database or querying external APIs.
+2. **Action** – the agent decides which tool to call, such as retrieving from the vector database or querying external APIs.
 
-3. Observation – the agent incorporates the tool’s response into its context before continuing the reasoning process.
+3. **Observation** – the agent incorporates the tool’s response into its context before continuing the reasoning process.
 
-This reasoning–action–observation loop enables the system to iteratively refine its answers. By combining retrieval with external tool usage, the agent acts as a “Chinese Food & Culture Expert” that can provide not only contextually relevant but also reasoning-driven and tool-augmented responses.
+This `reasoning–action–observation` loop enables the system to iteratively refine its answers. By combining retrieval with external tool usage, the agent acts as a “Chinese Food & Culture Expert” that can provide not only contextually relevant but also reasoning-driven and tool-augmented responses.
 
 ## LLM-as-a-Judge Method
 | Dimension                | My method (Pairwise + Rubric Scoring)                                                                                                                                                                                     | Ground Truth Comparison                                                                                                                                                   |
@@ -36,21 +36,21 @@ This reasoning–action–observation loop enables the system to iteratively ref
 Here are some examples to showcase the agent's capabilities:
 
 ### Document Search Example
-![](reAct_agent\demo_screenshot\use_doc_search.png)
+![](reAct_agent/demo_screenshot/use_doc_search.png)
 *Explanation: The agent using the `doc_search` tool to find top 3 relevant chunks within the knowledge base.*
 
 ### Web Search Example
-![](reAct_agent\demo_screenshot\use_web_search.png)
+![](reAct_agent/demo_screenshot/use_web_search.png)
 *Explanation: The agent utilizing the `web_search` tool to retrieve latest, real-time information or details not found in the knowledge base.*
 
 ### Wikipedia Search Example
-![](reAct_agent\demo_screenshot\use_wikipedia_tool.png)
+![](reAct_agent/demo_screenshot/use_wikipedia_tool.png)
 *Explanation: Illustrates the agent querying Wikipedia based on the user's request.*
 
 ### Evaluation Scores Example
-![](reAct_agent\demo_screenshot\eval_Score1.png)
+![](reAct_agent/demo_screenshot/eval_Score1.png)
 
-![](reAct_agent\demo_screenshot\eval_Score2.png)
+![](reAct_agent/demo_screenshot/eval_Score2.png)
 *Explanation: These tables display the result of the LLM-as-a-judge evaluation, showcasing total scores for different LLM_Embedding pairs. The judging explanations are available in `rag_evaluation_results.xlsx`. These two tables have different scores due to different set of user queries have been asked.*
 
 ## Project Structure
