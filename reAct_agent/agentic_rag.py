@@ -1,33 +1,35 @@
 import os
+import time
 from dotenv import load_dotenv
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_qdrant import QdrantVectorStore
 from langchain_core.prompts import PromptTemplate
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI
 from langchain_core.embeddings import Embeddings
 from huggingface_hub import InferenceClient
 from langchain_core.documents import Document
-from langchain_core.output_parsers import StrOutputParser
 from langchain_core.messages import HumanMessage, AIMessage
-from langchain.memory import ConversationBufferWindowMemory
 from qdrant_client import QdrantClient
 from langchain.agents import create_react_agent, AgentExecutor
 from langchain_core.tools import Tool
 from langchain_community.tools import WikipediaQueryRun
 from langchain_community.utilities import WikipediaAPIWrapper
 from datetime import datetime
+import pdfplumber
 
 # --- 1. Load environment variables ---
 load_dotenv()
 
 # --- 2. API keys and configuration ---
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY")
 QDRANT_URL = os.environ.get("QDRANT_URL")
 QDRANT_COLLECTION_NAME = os.environ.get("QDRANT_COLLECTION_NAME")
 
-if not all([GOOGLE_API_KEY, QDRANT_API_KEY, QDRANT_URL]):
-    raise ValueError("Please ensure GOOGLE_API_KEY, QDRANT_API_KEY, and QDRANT_URL are set in your .env file")
+if not all([GOOGLE_API_KEY, OPENROUTER_API_KEY, QDRANT_API_KEY, QDRANT_URL]):
+    raise ValueError("Please ensure all API keys are set in your .env file")
 
 # --- 3. Custom Embedding class (using Hugging Face Inference Client) ---
 class CustomIBMEmbeddings(Embeddings):
@@ -51,84 +53,179 @@ class CustomIBMEmbeddings(Embeddings):
         embedding = self.client.feature_extraction(prefixed_text)
         return embedding.tolist()
 
-# --- 4. Initialize LLM (using Google Gemini API) ---
-llm = ChatGoogleGenerativeAI(
+# --- 4. Initialize LLM (using Google Gemini API and OpenRouter API) ---
+# Google Gemini LLM
+llm_gemini = ChatGoogleGenerativeAI(
+    # You can pick gemini-2.5-flash-lite, gemini-2.0-flash-001
     model="gemini-2.5-flash",
     google_api_key=GOOGLE_API_KEY,
-    temperature=2.0,
+    temperature=1.0,
 )
+
+# OpenRouter LLM
+llm_openrouter = ChatOpenAI(
+    # You can pick others like moonshotai/kimi-k2:free, z-ai/glm-4.5-air:free
+    model="deepseek/deepseek-chat-v3-0324:free",
+    openai_api_key=OPENROUTER_API_KEY,
+    openai_api_base="https://openrouter.ai/api/v1",
+    temperature=1.0
+)
+
+# Default LLM (can be changed by user)
+llm = llm_openrouter
 
 # --- 5. Initialize Embedding ---
 embedding_function = CustomIBMEmbeddings()
 
 # --- 6. Initialize Qdrant Vector Store ---
-def get_or_create_vectorstore(doc_path: str = "sample.txt"):
-    # Try to connect to Qdrant client
-    client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
-    
-    # Create a sample document if it doesn't exist
-    if not os.path.exists(doc_path):
-        print(f"Sample file {doc_path} not found. Creating a sample document...")
-        sample_content = """
-        人工智能是计算机科学的一个分支，它企图了解智能的实质，并生产出一种新的能以人类智能相似的方式做出反应的智能机器。
-        人工智能的研究历史有着一条从以"推理"为重点到以"知识"为重点，再到以"学习"为重点的自然、清晰的脉络。
-        人工智能领域的研究包括机器人、语言识别、图像识别、自然语言处理和专家系统等。
-        机器学习是人工智能的核心，是使计算机具有智能的根本途径，其应用遍及人工智能的各个领域。
-        深度学习是机器学习中一种基于对数据进行表征学习的方法。观测值（例如图像、声音、文本）等原始数据可以使用多种方式来表示，如每个像素强度值，或者更抽象的表示如图像边缘、纹理和形状等。
-        """
-        with open(doc_path, "w", encoding="utf-8") as f:
-            f.write(sample_content)
-
-    # Check if collection exists
+def load_pdf_document(pdf_path: str) -> list[Document]:
+    """Load PDF document using pdfplumber, simplified version"""
     try:
-        collection_info = client.get_collection(collection_name=QDRANT_COLLECTION_NAME)
-        print(f"Collection '{QDRANT_COLLECTION_NAME}' already exists. Connecting to existing collection.")
-        # Check if the collection is empty, if so, add documents
-        if collection_info.points_count == 0:
-            print(f"Collection '{QDRANT_COLLECTION_NAME}' is empty. Loading and vectorizing documents...")
-            with open(doc_path, "r", encoding="utf-8") as f:
-                text = f.read()
-            documents = [Document(page_content=text)]
-            text_splitter = RecursiveCharacterTextSplitter(chunk_size=400, chunk_overlap=200)
+        # Check if file exists
+        if not os.path.exists(pdf_path):
+            raise FileNotFoundError(f"PDF file '{pdf_path}' does not exist")
+        
+        if not pdf_path.lower().endswith('.pdf'):
+            raise ValueError(f"File '{pdf_path}' is not a PDF")
+        
+        documents = []
+        with pdfplumber.open(pdf_path) as pdf:
+            for i, page in enumerate(pdf.pages):
+                text = page.extract_text()
+                if text and text.strip():  # Only process pages with content
+                    documents.append(Document(
+                        page_content=text,
+                        metadata={
+                            "source": pdf_path,
+                            "document_type": "pdf"
+                        }
+                    ))
+        
+        print(f"Successfully loaded PDF document: {pdf_path}, total {len(documents)} pages")
+        return documents
+        
+    except Exception as e:
+        raise ValueError(f"Error reading PDF file {pdf_path}: {str(e)}")
+
+def get_or_create_vectorstore(doc_path: str = "chinesecookbook.pdf"):
+    """Create or get vectorstore using PDF document (batch writing to avoid timeout)"""
+    
+    # Check if PDF file exists
+    if not os.path.exists(doc_path):
+        raise FileNotFoundError(f"PDF document '{doc_path}' does not exist. Please make sure the document file is in the current directory.")
+    
+    if not doc_path.lower().endswith('.pdf'):
+        raise ValueError(f"File '{doc_path}' is not a PDF.")
+    
+    try:
+        # Try to connect to Qdrant client
+        client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
+        
+        # Check if collection exists
+        try:
+            collection_info = client.get_collection(collection_name=QDRANT_COLLECTION_NAME)
+            print(f"Collection '{QDRANT_COLLECTION_NAME}' already exists. Connecting to existing collection.")
+            # Check if the collection is empty, if so, add documents
+            if collection_info.points_count == 0:
+                print(f"Collection '{QDRANT_COLLECTION_NAME}' is empty. Loading and vectorizing PDF document...")
+                
+                # Load PDF document
+                documents = load_pdf_document(doc_path)
+                
+                # Optimize text splitting
+                text_splitter = RecursiveCharacterTextSplitter(
+                    chunk_size=700,
+                    chunk_overlap=200
+                )
+                docs = text_splitter.split_documents(documents)
+                
+                print(f"PDF document split into {len(docs)} text chunks.")
+                
+                vectorstore_instance = QdrantVectorStore.from_existing_collection(
+                    embedding=embedding_function,
+                    collection_name=QDRANT_COLLECTION_NAME,
+                    url=QDRANT_URL,
+                    api_key=QDRANT_API_KEY,
+                )
+                
+                # Add documents in batches
+                batch_size = 10  # Further reduce batch size
+                for i in range(0, len(docs), batch_size):
+                    batch = docs[i:i + batch_size]
+                    print(f"Adding batch {i//batch_size + 1}, total {len(batch)} documents...")
+                    try:
+                        vectorstore_instance.add_documents(batch)
+                        print(f"Batch {i//batch_size + 1} added successfully")
+                    except Exception as e:
+                        print(f"Batch {i//batch_size + 1} failed: {e}")
+                        # Try adding individually
+                        for doc in batch:
+                            try:
+                                vectorstore_instance.add_documents([doc])
+                                print(f"Single document added successfully")
+                            except Exception as single_e:
+                                print(f"Single document failed: {single_e}")
+                    time.sleep(5)  # Increase delay
+                    
+                print("All documents have been added to the collection.")
+                return vectorstore_instance
+            else:
+                return QdrantVectorStore.from_existing_collection(
+                    embedding=embedding_function,
+                    collection_name=QDRANT_COLLECTION_NAME,
+                    url=QDRANT_URL,
+                    api_key=QDRANT_API_KEY,
+                )
+                
+        except Exception as e:
+            # If collection does not exist
+            print(f"Collection '{QDRANT_COLLECTION_NAME}' does not exist or cannot be accessed ({e}). Attempting to create a new collection.")
+            
+            # Load PDF document
+            documents = load_pdf_document(doc_path)
+            
+            # Optimize text splitting
+            text_splitter = RecursiveCharacterTextSplitter(
+                chunk_size=700,
+                chunk_overlap=200
+            )
             docs = text_splitter.split_documents(documents)
             
-            vectorstore_instance = QdrantVectorStore.from_existing_collection(
+            print(f"Vectorizing {len(docs)} document chunks and creating new collection '{QDRANT_COLLECTION_NAME}'...")
+            
+            # Create empty collection first
+            vectorstore = QdrantVectorStore.from_documents(
+                [],
                 embedding=embedding_function,
                 collection_name=QDRANT_COLLECTION_NAME,
                 url=QDRANT_URL,
                 api_key=QDRANT_API_KEY,
             )
-            vectorstore_instance.add_documents(docs)
-            print("Documents have been added to the existing collection.")
-            return vectorstore_instance
-        else:
-            return QdrantVectorStore.from_existing_collection(
-                embedding=embedding_function,
-                collection_name=QDRANT_COLLECTION_NAME,
-                url=QDRANT_URL,
-                api_key=QDRANT_API_KEY,
-            )
+            
+            # Add documents in batches
+            batch_size = 10  # Further reduce batch size
+            for i in range(0, len(docs), batch_size):
+                batch = docs[i:i + batch_size]
+                print(f"Adding batch {i//batch_size + 1}, total {len(batch)} documents...")
+                try:
+                    vectorstore.add_documents(batch)
+                    print(f"Batch {i//batch_size + 1} added successfully")
+                except Exception as e:
+                    print(f"Batch {i//batch_size + 1} failed: {e}")
+                    # Try adding individually
+                    for doc in batch:
+                        try:
+                            vectorstore.add_documents([doc])
+                            print(f"Single document added successfully")
+                        except Exception as single_e:
+                            print(f"Single document failed: {single_e}")
+                time.sleep(5)  # Increase delay
+            
+            print("New vector database collection created and populated!")
+            return vectorstore
+            
     except Exception as e:
-        # If collection does not exist
-        print(f"Collection '{QDRANT_COLLECTION_NAME}' does not exist or cannot be accessed ({e}). Attempting to create a new collection.")
-        
-        print(f"Loading documents from {doc_path} to create a new collection...")
-        with open(doc_path, "r", encoding="utf-8") as f:
-            text = f.read()
-        documents = [Document(page_content=text)]
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=400, chunk_overlap=200)
-        docs = text_splitter.split_documents(documents)
-        
-        print(f"Vectorizing {len(docs)} document chunks and creating a new collection '{QDRANT_COLLECTION_NAME}'...")
-        vectorstore = QdrantVectorStore.from_documents(
-            docs,
-            embedding=embedding_function,
-            collection_name=QDRANT_COLLECTION_NAME,
-            url=QDRANT_URL,
-            api_key=QDRANT_API_KEY,
-        )
-        print("New vector database collection created and populated!")
-        return vectorstore
+        raise RuntimeError(f"Error creating or getting vectorstore: {str(e)}")
 
 # To initialize vectorstore
 vectorstore = get_or_create_vectorstore()
@@ -174,7 +271,7 @@ def create_tools():
     )
     tools.append(web_search_tool)
     
-    # 2. Wikipedia search tool (backup)
+    # 2. Wikipedia search tool
     try:
         wikipedia = WikipediaQueryRun(
             name="wikipedia",
@@ -182,13 +279,12 @@ def create_tools():
             description="Search Wikipedia for general knowledge"
         )
         tools.append(wikipedia)
-        print("✅ Wikipedia search tool initialized successfully")
     except Exception as e:
         print(f"⚠️ Wikipedia search tool failed: {e}")
     
     # 3. Document search tool
     def doc_search(query: str) -> str:
-        """Search documents in the knowledge base."""
+        """Search documents in the knowledge base about Chinese food and culture."""
         try:
             print(f"\nSearching documents related to '{query}'...")
             results = vectorstore.similarity_search(query, k=3)
@@ -212,7 +308,7 @@ def create_tools():
     doc_search_tool = Tool(
         name="doc_search",
         func=doc_search,
-        description="Search documents in the knowledge base about AI, technology, and computer science"
+        description="Search documents in the knowledge base about Chinese food and culture"
     )
     tools.append(doc_search_tool)
     
@@ -223,7 +319,7 @@ def create_react_agent_with_prompt():
     """Create ReAct agent with custom prompt template."""
     
     # Custom ReAct prompt template
-    react_prompt_template = """Answer the following questions as best you can. You have access to the following tools:
+    react_prompt_template = """Answer the following questions as best you can. You are a Chinese Food & Culture Expert with access to the following tools:
 
     {tools}
 
@@ -239,10 +335,10 @@ def create_react_agent_with_prompt():
     Final Answer: the final answer to the original input question
 
     Special Instructions:
-    1. For technical questions about AI, machine learning, or computer science, use doc_search first
-    2. For latest information, news, or real-time data, use web_search
+    1. For questions about Chinese cuisine, cooking techniques, ingredients, or cultural aspects, use doc_search first
+    2. For latest information, news, or real-time data, or the doc_search don't have the enough information to answer the user question, use web_search
     3. You can use multiple tools in sequence if needed
-    4. Always provide comprehensive and accurate answers
+    4. Always provide comprehensive and accurate answers about Chinese food and culture
     5. Cite sources when using information from tools
     6. Current date: {current_date}
 
@@ -285,7 +381,13 @@ def create_react_agent_with_prompt():
 # --- 9. CLI Interaction Loop ---
 if __name__ == "__main__":
     print("Agentic RAG System with ReAct Agent has initialized!")
-    print("Type 'exit' or 'quit' to quit.")
+    print("Domain: Chinese Food & Culture Expert")
+    print("Document Source: chinesecookbook.pdf")
+    print("Default mode is Openrouter LLM")
+    print("\nType 'exit' or 'quit' to quit.")
+    print("Type 'switch_gemini' to use Google Gemini LLM")
+    print("Type 'switch_openrouter' to use OpenRouter LLM")
+    print("\nBelow is the reAct prompt template for you to see & understand how agent work:\n")
     
     # Create agent executor
     agent_executor = create_react_agent_with_prompt()
@@ -295,6 +397,18 @@ if __name__ == "__main__":
         if user_input.lower() in ["exit", "quit"]:
             print("Thank you! Goodbye.")
             break
+        elif user_input.lower() == "switch_gemini":
+            llm = llm_gemini
+            print("Switched to Google Gemini LLM")
+            # Recreate agent with new LLM
+            agent_executor = create_react_agent_with_prompt()
+            continue
+        elif user_input.lower() == "switch_openrouter":
+            llm = llm_openrouter
+            print("Switched to OpenRouter LLM (z-ai/glm-4.5-air:free)")
+            # Recreate agent with new LLM
+            agent_executor = create_react_agent_with_prompt()
+            continue
         
         try:
             print("\nProcessing your question with ReAct Agent...")
